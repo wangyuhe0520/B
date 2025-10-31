@@ -1,5 +1,12 @@
 # -*- coding: utf-8 -*-
 """
+Created on Thu Oct 30 19:56:14 2025
+
+@author: 15507
+"""
+
+# -*- coding: utf-8 -*-
+"""
 Created on Sun Oct 26 10:04:27 2025
 
 @author: 15507
@@ -411,8 +418,8 @@ for bucket in sorted(df_sorted['最终分桶'].unique()):
     if pd.notna(bucket) and str(bucket) != 'nan':
         bucket_data = df_sorted[df_sorted['最终分桶'] == bucket]
         
-        p85 = bucket_data['索赔差额绝对值'].quantile(0.85)
-        p98 = bucket_data['索赔差额绝对值'].quantile(0.98)
+        p85 = bucket_data['索赔差额绝对值'].quantile(0.848)
+        p98 = bucket_data['索赔差额绝对值'].quantile(0.985)
         
         risk_rules.append({
             '分桶': bucket,
@@ -721,8 +728,8 @@ def apply_correct_risk_rules(df):
     df_sorted = df.sort_values('索赔比例').reset_index(drop=True)
     
     total_samples = len(df_sorted)
-    reasonable_cutoff = int(total_samples * 0.85)
-    high_cutoff = int(total_samples * 0.97)
+    reasonable_cutoff = int(total_samples * 0.8505)
+    high_cutoff = int(total_samples * 0.971)
     
     risk_labels = []
     for i in range(total_samples):
@@ -821,8 +828,190 @@ model = LGBMClassifier(
 print("训练模型...")
 model.fit(X_train_processed, y_train_encoded)
 
+
+
+
+print("\n步骤4.5: 模型性能评估")
+
+from sklearn.metrics import classification_report, confusion_matrix, f1_score
+import seaborn as sns
+
+# 对训练集进行预测
+y_train_pred = model.predict(X_train_processed)
+y_train_pred_decoded = label_encoder_y.inverse_transform(y_train_pred)
+
+# 计算分类报告
+print("训练集分类报告:")
+print("=" * 50)
+print(classification_report(y_train, y_train_pred_decoded, 
+                           target_names=['合理诉求', '诉求偏高', '严重超额']))
+
+# 计算宏平均和加权平均F1分数
+macro_f1 = f1_score(y_train, y_train_pred_decoded, average='macro')
+weighted_f1 = f1_score(y_train, y_train_pred_decoded, average='weighted')
+
+print(f"宏平均F1分数: {macro_f1:.4f}")
+print(f"加权平均F1分数: {weighted_f1:.4f}")
+
+# 计算混淆矩阵
+cm = confusion_matrix(y_train, y_train_pred_decoded)
+plt.figure(figsize=(8, 6))
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+            xticklabels=['合理诉求', '诉求偏高', '严重超额'],
+            yticklabels=['合理诉求', '诉求偏高', '严重超额'])
+plt.title('训练集混淆矩阵')
+plt.xlabel('预测标签')
+plt.ylabel('真实标签')
+plt.tight_layout()
+plt.show()
+
+# 计算每个类别的详细指标
+precision, recall, fscore, support = precision_recall_fscore_support(
+    y_train, y_train_pred_decoded, labels=['合理诉求', '诉求偏高', '严重超额'])
+
+performance_df = pd.DataFrame({
+    '类别': ['合理诉求', '诉求偏高', '严重超额'],
+    '精确率(Precision)': precision,
+    '召回率(Recall)': recall,
+    'F1分数': fscore,
+    '支持样本数': support
+})
+
+print("\n详细性能指标:")
+print("=" * 50)
+print(performance_df.to_string(index=False))
+
+
+print("\n混淆矩阵详细分析:")
+print("=" * 40)
+
+# 计算各类别的混淆矩阵指标
+cm_df = pd.DataFrame(cm, 
+                    index=['真实-合理诉求', '真实-诉求偏高', '真实-严重超额'],
+                    columns=['预测-合理诉求', '预测-诉求偏高', '预测-严重超额'])
+
+print("混淆矩阵:")
+print(cm_df)
+
+# 计算每个类别的准确率、误分类率
+total_samples = np.sum(cm)
+accuracy = np.trace(cm) / total_samples
+
+print(f"\n总体准确率: {accuracy:.4f}")
+
+for i, class_name in enumerate(['合理诉求', '诉求偏高', '严重超额']):
+    tp = cm[i, i]  # 真正例
+    fp = np.sum(cm[:, i]) - tp  # 假正例
+    fn = np.sum(cm[i, :]) - tp  # 假负例
+    tn = total_samples - tp - fp - fn  # 真负例
+    
+    print(f"\n{class_name}类别:")
+    print(f"  真正例(TP): {tp}")
+    print(f"  假正例(FP): {fp}")
+    print(f"  真负例(TN): {tn}")
+    print(f"  假负例(FN): {fn}")
+
+
 y_test_pred = model.predict(X_test_processed)
 y_test_pred_decoded = label_encoder_y.inverse_transform(y_test_pred)
+
+
+
+print("\n步骤4.6: Kappa系数与系统参数影响分析")
+
+from sklearn.metrics import cohen_kappa_score
+import numpy as np
+
+# 计算基础Kappa系数
+kappa_baseline = cohen_kappa_score(y_train, y_train_pred_decoded)
+print(f"基础模型Kappa系数: {kappa_baseline:.4f}")
+
+# 分析不同系统参数对Kappa系数的影响
+print("\n不同系统参数对Kappa系数的影响:")
+print("=" * 50)
+
+# 测试不同的n_estimators
+n_estimators_list = [30, 50, 100, 200]
+kappa_by_estimators = []
+
+for n_est in n_estimators_list:
+    temp_model = LGBMClassifier(
+        random_state=42,
+        class_weight='balanced',
+        n_estimators=n_est,
+        verbose=-1
+    )
+    temp_model.fit(X_train_processed, y_train_encoded)
+    y_temp_pred = temp_model.predict(X_train_processed)
+    y_temp_pred_decoded = label_encoder_y.inverse_transform(y_temp_pred)
+    kappa = cohen_kappa_score(y_train, y_temp_pred_decoded)
+    kappa_by_estimators.append(kappa)
+    print(f"n_estimators={n_est}: Kappa = {kappa:.4f}")
+
+# 测试不同的学习率
+learning_rates = [0.01, 0.05, 0.1, 0.2]
+kappa_by_lr = []
+
+for lr in learning_rates:
+    temp_model = LGBMClassifier(
+        random_state=42,
+        class_weight='balanced',
+        n_estimators=50,
+        learning_rate=lr,
+        verbose=-1
+    )
+    temp_model.fit(X_train_processed, y_train_encoded)
+    y_temp_pred = temp_model.predict(X_train_processed)
+    y_temp_pred_decoded = label_encoder_y.inverse_transform(y_temp_pred)
+    kappa = cohen_kappa_score(y_train, y_temp_pred_decoded)
+    kappa_by_lr.append(kappa)
+    print(f"learning_rate={lr}: Kappa = {kappa:.4f}")
+
+# 可视化参数影响
+plt.figure(figsize=(15, 5))
+
+plt.subplot(1, 2, 1)
+plt.plot(n_estimators_list, kappa_by_estimators, 'o-', linewidth=2, markersize=8)
+plt.xlabel('n_estimators')
+plt.ylabel('Kappa系数')
+plt.title('n_estimators对Kappa系数的影响')
+plt.grid(True, alpha=0.3)
+
+plt.subplot(1, 2, 2)
+plt.plot(learning_rates, kappa_by_lr, 'o-', linewidth=2, markersize=8, color='orange')
+plt.xlabel('learning_rate')
+plt.ylabel('Kappa系数')
+plt.title('learning_rate对Kappa系数的影响')
+plt.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.show()
+
+# 找到最优参数
+best_estimators = n_estimators_list[np.argmax(kappa_by_estimators)]
+best_lr = learning_rates[np.argmax(kappa_by_lr)]
+best_kappa = max(max(kappa_by_estimators), max(kappa_by_lr))
+
+print(f"\n最优参数组合:")
+print(f"- n_estimators: {best_estimators} (Kappa = {max(kappa_by_estimators):.4f})")
+print(f"- learning_rate: {best_lr} (Kappa = {max(kappa_by_lr):.4f})")
+print(f"- 最佳Kappa系数: {best_kappa:.4f}")
+
+# Kappa系数解释
+print(f"\nKappa系数解释:")
+if kappa_baseline >= 0.8:
+    interpretation = "几乎完全一致"
+elif kappa_baseline >= 0.6:
+    interpretation = "高度一致"
+elif kappa_baseline >= 0.4:
+    interpretation = "中等一致"
+else:
+    interpretation = "一致性较差"
+
+print(f"Kappa = {kappa_baseline:.4f} → {interpretation}")
+
+
+
 
 print("\n步骤5: 最终结果调整")
 
